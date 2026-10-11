@@ -10,6 +10,7 @@ SEED = 42
 
 PRIORITY_LABELS = [(75, "Критический"), (50, "Высокий"), (25, "Средний"), (0, "Низкий")]
 PRIORITY_WEIGHTS = {"economic": 0.4, "urgency": 0.35, "criticality": 0.25}
+TRADE_BU_IDS = [f"BU-DIV-{index}" for index in range(1, 6)]
 
 
 def _week_start(value: date) -> date:
@@ -39,10 +40,11 @@ def generate_domovoy_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
 
     business_units = pd.DataFrame(
         [
-            {"bu_id": "BU-CENTER", "name": "Центр", "bu_type": "trade", "stores_count": 120, "default_dc_id": "DC-MSK", "soe_meeting_day": "Mon", "fast_track_enabled": False},
-            {"bu_id": "BU-REGIONS", "name": "Регионы", "bu_type": "trade", "stores_count": 210, "default_dc_id": "DC-EKB", "soe_meeting_day": "Tue", "fast_track_enabled": False},
-            {"bu_id": "BU-ONLINE", "name": "Онлайн", "bu_type": "trade", "stores_count": 0, "default_dc_id": "DC-MSK", "soe_meeting_day": "Mon", "fast_track_enabled": True},
-            {"bu_id": "BU-IMPORT", "name": "Импорт", "bu_type": "import", "stores_count": 0, "default_dc_id": "DC-MSK", "soe_meeting_day": "Tue", "fast_track_enabled": True},
+            {"bu_id": bu_id, "name": f"Региональный дивизион {index}", "bu_type": "trade", "stores_count": stores, "default_dc_id": "DC-MSK" if index in {1, 3, 5} else "DC-EKB", "soe_meeting_day": "Tue", "fast_track_enabled": False}
+            for index, (bu_id, stores) in enumerate(zip(TRADE_BU_IDS, [95, 110, 85, 100, 90]), start=1)
+        ]
+        + [
+            {"bu_id": "BU-IMPORT", "name": "Импорт", "bu_type": "import", "stores_count": 0, "default_dc_id": "DC-MSK", "soe_meeting_day": "Wed", "fast_track_enabled": True}
         ]
     )
 
@@ -139,7 +141,7 @@ def generate_domovoy_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
             sku_codes.append(sku)
     skus = pd.DataFrame(skus)
 
-    trade_bu_ids = ["BU-CENTER", "BU-REGIONS", "BU-ONLINE"]
+    trade_bu_ids = TRADE_BU_IDS
     planning_params = []
     for sku in skus["sku"]:
         for bu_id in trade_bu_ids:
@@ -168,12 +170,12 @@ def generate_domovoy_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
             for bu_id in trade_bu_ids:
                 base = 18 + (week_idx % 8) * 2 + (int(row["sku"].split("-")[-1]) % 10)
                 promo_boost = 1.0
-                if bu_id == "BU-ONLINE" and week_idx % 12 in (2, 5, 8):
-                    promo_boost = 2.8
+                if week_idx % 12 in (2, 5, 8) and int(bu_id[-1]) == (week_idx % 5) + 1:
+                    promo_boost = 1.8
                 actual_sales = max(0, int(base * season_weight * promo_boost * (0.8 + rng.random() * 0.55)))
                 potential_demand = max(actual_sales, int(actual_sales * (1.08 + rng.random() * 0.35)))
                 in_stock_share = round(float(np.clip(0.78 + rng.random() * 0.2, 0.6, 0.99)), 4)
-                promo_id = None if week_idx % 12 not in (2, 5, 8) else f"PR-{bu_id[:2].lower()}-{week_idx}"
+                promo_id = None if week_idx % 12 not in (2, 5, 8) else f"PR-{bu_id[-1]}-{week_idx}"
                 sales_history.append(
                     {
                         "week_start": week_start.isoformat(),
@@ -190,12 +192,11 @@ def generate_domovoy_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
     inventory = []
     for _, row in skus.iterrows():
         for bu_id in trade_bu_ids:
+            bu_index = TRADE_BU_IDS.index(bu_id)
             locations = [
-                ("dc", "DC-MSK" if bu_id in {"BU-CENTER", "BU-ONLINE"} else "DC-EKB"),
+                ("dc", "DC-MSK" if bu_index % 2 == 0 else "DC-EKB"),
                 ("stores", f"STORES-{bu_id}"),
             ]
-            if bu_id == "BU-ONLINE":
-                locations.append(("marketplace", "MP-OZON-FBO"))
             for location_type, location_id in locations:
                 on_hand = int(120 + rng.integers(30, 280) + (int(row["sku"].split("-")[-1]) % 20))
                 reserved = int(rng.integers(0, 35))
@@ -259,9 +260,9 @@ def generate_domovoy_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
 
     promo_registry = pd.DataFrame(
         [
-            {"promo_id": "PR-ONL-11", "bu_id": "BU-ONLINE", "sku_list": ["SKU-DISH-001", "SKU-SDA-001"], "start_week": (as_of + timedelta(weeks=2)).isoformat(), "end_week": (as_of + timedelta(weeks=6)).isoformat(), "planned_uplift": 1.8, "commitment_type": "marketplace", "is_external_commitment": True, "approved_in_cycle": "SOP-2026-10", "min_shift_weeks": 2},
-            {"promo_id": "PR-REG-07", "bu_id": "BU-REGIONS", "sku_list": ["SKU-DEC-001"], "start_week": (as_of + timedelta(weeks=5)).isoformat(), "end_week": (as_of + timedelta(weeks=8)).isoformat(), "planned_uplift": 1.6, "commitment_type": "leaflet", "is_external_commitment": True, "approved_in_cycle": "SOP-2026-10", "min_shift_weeks": 4},
-            {"promo_id": "PR-CTR-03", "bu_id": "BU-CENTER", "sku_list": ["SKU-DISH-003"], "start_week": (as_of + timedelta(weeks=3)).isoformat(), "end_week": (as_of + timedelta(weeks=4)).isoformat(), "planned_uplift": 1.4, "commitment_type": "internal", "is_external_commitment": False, "approved_in_cycle": "SOP-2026-10", "min_shift_weeks": 0},
+            {"promo_id": "PR-DIV-01", "bu_id": TRADE_BU_IDS[0], "sku_list": ["SKU-DISH-001", "SKU-SDA-001"], "start_week": (as_of + timedelta(weeks=2)).isoformat(), "end_week": (as_of + timedelta(weeks=6)).isoformat(), "planned_uplift": 1.8, "commitment_type": "leaflet", "is_external_commitment": True, "approved_in_cycle": "SOP-2026-10", "min_shift_weeks": 2},
+            {"promo_id": "PR-DIV-03", "bu_id": TRADE_BU_IDS[2], "sku_list": ["SKU-DEC-001"], "start_week": (as_of + timedelta(weeks=5)).isoformat(), "end_week": (as_of + timedelta(weeks=8)).isoformat(), "planned_uplift": 1.6, "commitment_type": "leaflet", "is_external_commitment": True, "approved_in_cycle": "SOP-2026-10", "min_shift_weeks": 4},
+            {"promo_id": "PR-DIV-05", "bu_id": TRADE_BU_IDS[4], "sku_list": ["SKU-DISH-003"], "start_week": (as_of + timedelta(weeks=3)).isoformat(), "end_week": (as_of + timedelta(weeks=4)).isoformat(), "planned_uplift": 1.4, "commitment_type": "internal", "is_external_commitment": False, "approved_in_cycle": "SOP-2026-10", "min_shift_weeks": 0},
         ]
     )
 
@@ -374,7 +375,7 @@ def generate_domovoy_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
                 "status": ["new", "assessed", "in_contour", "to_session", "decided", "executed"][idx % 6],
                 "owner_role": "BU_DM",
                 "decision_deadline": (detected_at + timedelta(hours=48)).isoformat(timespec="minutes") if fast_track else (as_of + timedelta(days=4 + (idx % 5))).isoformat(),
-                "root_cause": ["forecast_error", "promo_overperform", "supplier_delay", "customs", "marketplace_action"][idx % 5],
+                "root_cause": ["forecast_error", "promo_overperform", "supplier_delay", "customs", "regional_demand_shift"][idx % 5],
                 "recurrence_weeks": 1 + idx % 4,
             }
         )
@@ -391,17 +392,17 @@ def generate_domovoy_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
             "step1_external_promo": 80,
             "step2_pro_rata": 460,
             "step_sell_through": 0,
-            "result_by_bu": {"BU-CENTER": 400, "BU-ONLINE": 120, "BU-REGIONS": 180},
+            "result_by_bu": {bu_id: 200 for bu_id in TRADE_BU_IDS},
         }]
     )
 
     extra_needs = pd.DataFrame([
-        {"need_id": "XN-0001", "bu_id": "BU-REGIONS", "sku": skus["sku"].iloc[0], "qty": 120, "need_week": (as_of + timedelta(weeks=2)).isoformat(), "reason": "Дополнительный спрос из-за промо", "submitted_at": (datetime.combine(as_of, datetime.min.time()) + timedelta(days=1)).isoformat(timespec="seconds"), "status": "open", "served_qty": 0, "source": "import_extra", "age_weeks": 1},
-        {"need_id": "XN-0002", "bu_id": "BU-ONLINE", "sku": skus["sku"].iloc[1], "qty": 180, "need_week": (as_of + timedelta(weeks=3)).isoformat(), "reason": "Повышенный спрос маркетплейса", "submitted_at": (datetime.combine(as_of, datetime.min.time()) + timedelta(days=2)).isoformat(timespec="seconds"), "status": "served", "served_qty": 180, "source": "released_by_bu", "age_weeks": 1},
+        {"need_id": "XN-0001", "bu_id": TRADE_BU_IDS[1], "sku": skus["sku"].iloc[0], "qty": 120, "need_week": (as_of + timedelta(weeks=2)).isoformat(), "reason": "Дополнительный спрос из-за промо", "submitted_at": (datetime.combine(as_of, datetime.min.time()) + timedelta(days=1)).isoformat(timespec="seconds"), "status": "open", "served_qty": 0, "source": "import_extra", "age_weeks": 1},
+        {"need_id": "XN-0002", "bu_id": TRADE_BU_IDS[3], "sku": skus["sku"].iloc[1], "qty": 180, "need_week": (as_of + timedelta(weeks=3)).isoformat(), "reason": "Дополнительная заявка дивизиона", "submitted_at": (datetime.combine(as_of, datetime.min.time()) + timedelta(days=2)).isoformat(timespec="seconds"), "status": "served", "served_qty": 180, "source": "released_by_bu", "age_weeks": 1},
     ])
 
     request_releases = pd.DataFrame([
-        {"release_id": "REL-001", "bu_id": "BU-CENTER", "sku": skus["sku"].iloc[0], "qty": 40, "released_at": (datetime.combine(as_of, datetime.min.time()) + timedelta(days=2)).isoformat(timespec="seconds"), "taken_by_bu_id": "BU-ONLINE", "compensation_rub": 4200},
+        {"release_id": "REL-001", "bu_id": TRADE_BU_IDS[0], "sku": skus["sku"].iloc[0], "qty": 40, "released_at": (datetime.combine(as_of, datetime.min.time()) + timedelta(days=2)).isoformat(timespec="seconds"), "taken_by_bu_id": TRADE_BU_IDS[1], "compensation_rub": 4200},
     ])
 
     session_agenda = pd.DataFrame([
@@ -455,10 +456,87 @@ def _avg_weekly_potential_demand(data: dict[str, pd.DataFrame], sku: str, bu_id:
     return float(recent["potential_demand"].mean())
 
 
+def allocate_equal_cover_days(
+    available_qty: int,
+    current_stock: dict[str, int],
+    daily_demand: dict[str, float],
+    request_caps: dict[str, int] | None = None,
+) -> pd.DataFrame:
+    """Allocate a scarce lot to improve the lowest stock-cover days first."""
+    business_units = sorted(
+        bu_id for bu_id, demand in daily_demand.items() if demand > 0
+    )
+    columns = ["bu_id", "stock_before", "daily_demand", "allocation_qty", "coverage_days_after"]
+    if not business_units or available_qty <= 0:
+        return pd.DataFrame(columns=columns)
+
+    available_qty = max(0, int(available_qty))
+    stocks = {bu_id: max(0, int(current_stock.get(bu_id, 0))) for bu_id in business_units}
+    demands = {bu_id: float(daily_demand[bu_id]) for bu_id in business_units}
+    caps = {
+        bu_id: max(0, int(request_caps.get(bu_id, 0))) if request_caps is not None else available_qty
+        for bu_id in business_units
+    }
+
+    def allocations_at(cover_days: float) -> dict[str, float]:
+        return {
+            bu_id: min(caps[bu_id], max(0.0, cover_days * demands[bu_id] - stocks[bu_id]))
+            for bu_id in business_units
+        }
+
+    lowest_cover = min(stocks[bu_id] / demands[bu_id] for bu_id in business_units)
+    highest_cover = max(stocks[bu_id] / demands[bu_id] for bu_id in business_units)
+    low = lowest_cover
+    high = highest_cover + available_qty / min(demands.values()) + 1
+    for _ in range(80):
+        middle = (low + high) / 2
+        if sum(allocations_at(middle).values()) < available_qty:
+            low = middle
+        else:
+            high = middle
+
+    raw_allocations = allocations_at(high)
+    allocations = {
+        bu_id: min(caps[bu_id], int(np.floor(raw_allocations[bu_id])))
+        for bu_id in business_units
+    }
+    remaining_qty = min(available_qty, sum(caps.values())) - sum(allocations.values())
+    while remaining_qty > 0:
+        eligible = [bu_id for bu_id in business_units if allocations[bu_id] < caps[bu_id]]
+        if not eligible:
+            break
+        next_bu = min(
+            eligible,
+            key=lambda bu_id: ((stocks[bu_id] + allocations[bu_id]) / demands[bu_id], bu_id),
+        )
+        allocations[next_bu] += 1
+        remaining_qty -= 1
+
+    return pd.DataFrame(
+        [
+            {
+                "bu_id": bu_id,
+                "stock_before": stocks[bu_id],
+                "daily_demand": demands[bu_id],
+                "allocation_qty": allocations[bu_id],
+                "coverage_days_after": round((stocks[bu_id] + allocations[bu_id]) / demands[bu_id], 1),
+            }
+            for bu_id in business_units
+        ],
+        columns=columns,
+    )
+
+
+def cap_extra_import_quantity(confirmed_request_qty: int, requested_extra_qty: int) -> int:
+    """Limit import volume above confirmed BU requests to the S&OP 10% cap."""
+    extra_limit = int(np.floor(max(0, confirmed_request_qty) * 0.10))
+    return min(max(0, int(requested_extra_qty)), extra_limit)
+
+
 def scenario_options(data: dict[str, pd.DataFrame], event: pd.Series, import_day: int) -> pd.DataFrame:
     """Compare no action with a transfer limited to stock above donor safety stock."""
     sku = event["sku"]
-    bu_id = event.get("bu_id", "BU-CENTER")
+    bu_id = event.get("bu_id", TRADE_BU_IDS[0])
 
     item = data["skus"][data["skus"]["sku"] == sku].iloc[0]
     inventory = data["inventory"]

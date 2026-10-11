@@ -4,7 +4,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from .model import generate_domovoy_data, optimize_transfer, scenario_options
+from .model import (
+    allocate_equal_cover_days,
+    cap_extra_import_quantity,
+    generate_domovoy_data,
+    optimize_transfer,
+    scenario_options,
+)
 
 
 st.set_page_config(page_title="Домовой S&OE", layout="wide")
@@ -338,11 +344,15 @@ def _render_flow(data: dict[str, pd.DataFrame]) -> None:
     st.subheader("Партии в пути по этапам")
     st.plotly_chart(_chart_layout(stage_counts, height=300), width="stretch", config={"displayModeBar": False})
 
-    zones = data["freeze_zones"].copy()
-    zones["Этапы"] = zones["stages"].map(lambda values: ", ".join(STAGE_LABELS[value] for value in values))
-    zones["Допустимые меры"] = zones["levers"].map(lambda values: ", ".join(LEVER_LABELS[value] for value in values))
-    zones["Кто решает"] = zones["decision_level"].map(DECISION_LEVEL_LABELS)
-    st.dataframe(zones[["zone", "Этапы", "Допустимые меры", "Кто решает"]].rename(columns={"zone": "Зона заморозки"}), width="stretch", hide_index=True)
+    st.subheader("Заморозка решений по этапам")
+    for _, zone in data["freeze_zones"].iterrows():
+        stage_names = ", ".join(STAGE_LABELS[stage] for stage in zone["stages"])
+        actions = ", ".join(LEVER_LABELS[lever] for lever in zone["levers"])
+        decision_level = DECISION_LEVEL_LABELS[zone["decision_level"]]
+        with st.expander(f"{zone['zone']} · {stage_names} · Решает: {decision_level}"):
+            st.write(f"**Допустимые меры:** {actions}")
+            if zone["zone"] == "Z3_FACTORY":
+                st.success("Уровень решения: S&OP. Изменение объёма заказа и отмена не входят в недельный S&OE.")
 
     st.subheader("Недельный ритм")
     cadence = pd.DataFrame([
@@ -353,6 +363,61 @@ def _render_flow(data: dict[str, pd.DataFrame]) -> None:
         {"День": "Пятница", "Работа": "Исполнение решений и контроль", "Владелец": "Владельцы решений"},
     ])
     st.dataframe(cadence, width="stretch", hide_index=True)
+
+    _render_allocation_rules(data)
+
+
+def _render_allocation_rules(data: dict[str, pd.DataFrame]) -> None:
+    st.subheader("Общие правила заявок и распределения")
+    rule_cols = st.columns(3)
+    releases = data["request_releases"]
+    released_qty = int(releases["qty"].sum()) if not releases.empty else 0
+    refusal_compensation = int(releases["compensation_rub"].sum()) if not releases.empty else 0
+    rule_cols[0].metric("Отказ от firm-заявки", "Компенсируемый")
+    rule_cols[0].caption(f"В примере: высвобождено {released_qty} ед.; компенсация {refusal_compensation:,.0f} ₽.".replace(",", " "))
+    rule_cols[1].metric("Сверх заявок", "Не более 10%")
+    rule_cols[1].caption("Лимит применяется к закупочному объёму импорта и утверждается в месячном S&OP.")
+    rule_cols[2].metric("Дефицит", "Равное покрытие")
+    rule_cols[2].caption("Ограниченный лот направляется туда, где он выравнивает запас в днях между дивизионами.")
+
+    with st.expander("Симулятор распределения дефицитного лота"):
+        trade_units = data["business_units"].query("bu_type == 'trade'")
+        unit_names = dict(zip(trade_units["bu_id"], trade_units["name"]))
+        request_skus = data["firm_requests"]["sku"].drop_duplicates().tolist()
+        selected_sku = st.selectbox("SKU с firm-заявками", request_skus, key="allocation_sku")
+        available_qty = st.slider("Доступно в поступившем лоте, ед.", 0, 3000, 600, 50, key="allocation_qty")
+
+        stock_rows = data["inventory"][data["inventory"]["sku"] == selected_sku].copy()
+        stock_rows["free_qty"] = (stock_rows["on_hand"] - stock_rows["reserved"]).clip(lower=0)
+        stock_by_bu = stock_rows.groupby("bu_id")["free_qty"].sum().to_dict()
+        sales = data["sales_history"][data["sales_history"]["sku"] == selected_sku]
+        recent = sales.groupby("bu_id").tail(4)
+        daily_demand = (recent.groupby("bu_id")["potential_demand"].mean() / 7).to_dict()
+        requests = data["firm_requests"]
+        requests = requests[(requests["sku"] == selected_sku) & requests["bu_id"].isin(trade_units["bu_id"])]
+        request_caps = requests.set_index("bu_id")["qty"].astype(int).to_dict()
+        allocation = allocate_equal_cover_days(available_qty, stock_by_bu, daily_demand, request_caps)
+        allocation["Бизнес-единица"] = allocation["bu_id"].map(unit_names)
+        allocation = allocation.rename(columns={
+            "stock_before": "Запас до поставки, ед.",
+            "daily_demand": "Потенциальный спрос, ед./день",
+            "allocation_qty": "Выделено из лота, ед.",
+            "coverage_days_after": "Запас после решения, дней",
+        })
+        total_allocated = int(allocation["Выделено из лота, ед."].sum())
+        st.caption(f"Алгоритм распределил {total_allocated} из {available_qty} ед.; остаток лота не назначается без firm-потребности.")
+        st.dataframe(
+            allocation[["Бизнес-единица", "Запас до поставки, ед.", "Потенциальный спрос, ед./день", "Выделено из лота, ед.", "Запас после решения, дней"]],
+            width="stretch",
+            hide_index=True,
+        )
+
+    with st.expander("Проверка лимита дополнительного импорта"):
+        input_cols = st.columns(2)
+        confirmed_qty = input_cols[0].number_input("Подтверждённые firm-заявки, ед.", min_value=0, value=1000, step=100)
+        requested_extra = input_cols[1].number_input("Запрошено сверх заявок, ед.", min_value=0, value=250, step=50)
+        allowed_extra = cap_extra_import_quantity(confirmed_qty, requested_extra)
+        st.info(f"При базе {confirmed_qty:,} ед. максимум сверх заявок: {int(confirmed_qty * 0.1):,} ед. Разрешённый объём из запроса: {allowed_extra:,} ед.".replace(",", " "))
 
 
 def _render_analytics(data: dict[str, pd.DataFrame], selected_bu: str, selected_category: str, history_weeks: int) -> None:
@@ -548,6 +613,14 @@ def _render_pilot_targets() -> None:
     )
     st.plotly_chart(_chart_layout(timeline, height=300), width="stretch", config={"displayModeBar": False})
     st.dataframe(roadmap, width="stretch", hide_index=True)
+    st.subheader("Как проверяется эффект")
+    comparison = pd.DataFrame([
+        {"Сравнение": "Пилотные категории vs контрольные категории", "Что отделяет": "Общий рыночный и сезонный фон"},
+        {"Сравнение": "Волна 1 (~50% импорта) vs волна 2", "Что отделяет": "Эффект подключения дивизионов к циклу"},
+        {"Сравнение": "Текущий сезон vs прошлый сезон", "Что отделяет": "Сезонность и базовую динамику категории"},
+    ])
+    st.dataframe(comparison, width="stretch", hide_index=True)
+    st.caption("Эффект оценивается по изменению показателей, а не только по итоговым уровням; категории и волны сопоставляются до/после включения в цикл.")
     st.subheader("Приёмка")
     st.markdown(
         "- Импорт участвует в цикле не менее 3 месяцев.\n"
