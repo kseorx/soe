@@ -31,9 +31,47 @@ def test_scenario_options_are_feasible_and_ordered():
     options = scenario_options(data, event, import_day=10)
 
     assert not options.empty
-    assert {"Без вмешательства", "Межрегиональный трансфер", "Срочное локальное пополнение"}.issubset(set(options["Вариант"]))
+    assert set(options["Вариант"]) == {
+        "Без вмешательства",
+        "Межрегиональный трансфер из свободного запаса",
+    }
+    assert "Закупка, ₽" not in options.columns
     assert options["Итого, ₽"].min() >= 0
     assert options["Выполнение спроса, %"].between(0, 100).all()
+
+
+def test_scenario_uses_daily_demand_and_dc_stock_for_screenshot_case():
+    data = generate_domovoy_data(date(2026, 10, 5))
+    event = data["events"].iloc[7]
+
+    options = scenario_options(data, event, import_day=5)
+    baseline = options[options["Вариант"] == "Без вмешательства"].iloc[0]
+    recent_sales = data["sales_history"]
+    recent_sales = recent_sales[(recent_sales["sku"] == event["sku"]) & (recent_sales["bu_id"] == event["bu_id"])].tail(4)
+    daily_demand = float(recent_sales["actual_sales"].mean()) / 7
+    dc_stock = data["inventory"]
+    dc_stock = dc_stock[(dc_stock["sku"] == event["sku"]) & (dc_stock["bu_id"] == event["bu_id"]) & (dc_stock["location_type"] == "dc")]
+    available_stock = int((dc_stock["on_hand"] - dc_stock["reserved"]).clip(lower=0).sum())
+    expected_deficit = max(0, round(daily_demand * 28 - available_stock))
+
+    assert baseline["Дефицит, ед."] == expected_deficit
+    assert baseline["Выполнение спроса, %"] == round(100 * (1 - expected_deficit / (daily_demand * 28)), 1)
+    assert baseline["Дефицит до импорта, ед."] <= baseline["Дефицит, ед."]
+    assert baseline["Вариант"] == optimize_transfer(data, event, import_day=5)["option"]["Вариант"]
+
+
+def test_transfer_uses_only_donor_stock_above_safety_stock():
+    data = generate_domovoy_data(date(2026, 10, 5))
+    event = data["events"].iloc[0]
+    target_dc = (data["inventory"]["sku"] == event["sku"]) & (data["inventory"]["bu_id"] == event["bu_id"]) & (data["inventory"]["location_type"] == "dc")
+    data["inventory"].loc[target_dc, "on_hand"] = 0
+
+    options = scenario_options(data, event, import_day=5)
+    transfer = options[options["Вариант"] == "Межрегиональный трансфер из свободного запаса"].iloc[0]
+    assert transfer["Операция, ед."] > 0
+    assert transfer["Операция, ед."] <= 530
+    recommendation = optimize_transfer(data, event, import_day=5)
+    assert recommendation["option"]["Вариант"] == "Межрегиональный трансфер из свободного запаса"
 
 
 def test_optimizer_returns_structured_result():

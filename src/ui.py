@@ -36,6 +36,23 @@ def _apply_visual_style() -> None:
             color: #263A82; border-bottom-color: #F5A000;
         }
         [data-testid="stDataFrame"] { border: 1px solid #DCE2EB; }
+        .soe-flow-zones { display: grid; grid-template-columns: 1fr 4fr 1fr; gap: 8px; margin: 12px 0; }
+        .soe-flow-zones span { padding: 8px; text-align: center; font-size: 13px; font-weight: 600; }
+        .soe-flow-sop { background: #E8ECF5; color: #68788E; }
+        .soe-flow-soe { background: #5969C6; color: #FFFFFF; }
+        .soe-flow-sales { background: #E8ECF5; color: #68788E; }
+        .soe-flow-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+        .soe-flow-step { min-height: 88px; padding: 12px; background: #FFFFFF; border-top: 4px solid #5969C6; border-radius: 3px; }
+        .soe-flow-step:nth-child(3), .soe-flow-step:nth-child(5) { border-top-color: #F5A000; }
+        .soe-flow-step b { display: block; color: #263A82; font-size: 14px; line-height: 1.3; }
+        .soe-flow-step small { display: block; margin-top: 6px; color: #68788E; font-size: 12px; }
+        .soe-flow-step i { display: block; margin-bottom: 5px; color: #68788E; font-size: 11px; font-style: normal; }
+        @media (max-width: 700px) {
+            [data-testid="stAppViewBlockContainer"] { padding-left: 0.75rem; padding-right: 0.75rem; }
+            .soe-flow-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+            .soe-flow-step { min-height: 82px; padding: 10px; }
+            .soe-flow-zones span { font-size: 11px; padding: 7px 3px; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -212,17 +229,54 @@ def _render_problem_panel(events: pd.DataFrame, data: dict[str, pd.DataFrame]) -
 
     import_day = st.slider("День поступления в сценарии", min_value=3, max_value=21, value=10)
     options = scenario_options(data, event, import_day)
-    st.dataframe(options, width="stretch", hide_index=True)
+    st.subheader("Сравнение сценариев · горизонт 28 дней")
+    st.caption("Продажи заданы за неделю и переведены в дневной спрос. Варианты новой закупки не рассматриваются: S&OE работает с уже купленным товаром.")
+    visible_options = options[
+        (options["Вариант"] == "Без вмешательства") | (options["Операция, ед."] > 0)
+    ]
+    service_chart = go.Figure(go.Bar(
+        x=visible_options["Выполнение спроса, %"],
+        y=visible_options["Вариант"],
+        orientation="h",
+        marker_color=[MUTED if name == "Без вмешательства" else INDIGO for name in visible_options["Вариант"]],
+        text=[f"{value:.1f}%" for value in visible_options["Выполнение спроса, %"]],
+        textposition="outside",
+        hovertemplate="%{y}: %{x:.1f}% спроса выполнено<extra></extra>",
+    ))
+    service_chart.update_layout(
+        xaxis={"title": "Выполнение спроса", "range": [0, 112], "ticksuffix": "%"},
+        yaxis={"autorange": "reversed"},
+        showlegend=False,
+    )
+    st.plotly_chart(_chart_layout(service_chart, height=190 if len(visible_options) == 1 else 240), width="stretch", config={"displayModeBar": False})
+    for _, scenario in visible_options.iterrows():
+        with st.expander(f"{scenario['Вариант']} · {scenario['Выполнение спроса, %']:.1f}% спроса"):
+            detail_cols = st.columns(2)
+            detail_cols[0].write(f"Дефицит за 28 дней: **{scenario['Дефицит, ед.']} ед.**")
+            detail_cols[1].write(f"Общие модельные затраты: **{scenario['Итого, ₽']:,.0f} ₽**".replace(",", " "))
+            detail_cols[0].write(f"Операция: **{scenario['Операция, ед.']} ед.**")
+            detail_cols[1].write(f"Трансфер: **{scenario['Логистика, ₽']:,.0f} ₽**".replace(",", " "))
+            st.caption(scenario["Ограничение"])
+    unavailable_transfer = options[
+        (options["Вариант"] == "Межрегиональный трансфер из свободного запаса")
+        & (options["Операция, ед."] == 0)
+    ]
+    if not unavailable_transfer.empty:
+        st.caption(f"Трансфер не предлагается: {unavailable_transfer.iloc[0]['Ограничение']}.")
 
     result = optimize_transfer(data, event, import_day)
     if result["status"] == "optimal":
         option = result["option"]
-        st.success(result["message"])
-        result_cols = st.columns(4)
-        result_cols[0].metric("Рекомендуемый вариант", option["Вариант"])
-        result_cols[1].metric("Полные затраты", f"{option['Итого, ₽']:,.0f} ₽".replace(",", " "))
-        result_cols[2].metric("Выполнение спроса", f"{option['Выполнение спроса, %']:.1f}%")
-        result_cols[3].metric("Дефицит", f"{option['Дефицит, ед.']} ед.")
+        if option["Вариант"] == "Без вмешательства" and option["Дефицит, ед."] == 0:
+            st.success("Рекомендация: без вмешательства. Доступный запас РЦ покрывает расчётный спрос на всём 28-дневном горизонте; переводить резерв в эту БЕ не требуется.")
+        else:
+            st.success(result["message"])
+        st.markdown(f"**Рекомендуемый вариант: {option['Вариант']}**")
+        st.write(
+            f"Покрытие спроса: **{option['Выполнение спроса, %']:.1f}%** · "
+            f"дефицит: **{option['Дефицит, ед.']} ед.** · "
+            f"модельные затраты: **{option['Итого, ₽']:,.0f} ₽**".replace(",", " ")
+        )
     elif result["status"] == "unavailable":
         st.warning(result["message"])
     else:
@@ -234,35 +288,27 @@ def _render_flow(data: dict[str, pd.DataFrame]) -> None:
     st.caption("Рычаги S&OE ограничены текущим этапом партии; объём закупки остаётся в контуре S&OP.")
 
     st.subheader("Путь товара и зоны управления")
-    labels = [
-        "Заказ\n4–5 мес.", "Производство\n30–45 дн.", "Готово к отгрузке\n0–14 дн.",
-        "Море / ж/д\n45–90 дн.", "Таможня\n7–14 дн.", "Центральный РЦ\n3–7 дн.",
-        "Региональные РЦ\n3–10 дн.", "Магазин",
+    stages = [
+        ("Заявки и заказ", "Прогноз 4–5 мес."),
+        ("Производство", "30–45 дней"),
+        ("Готово к отгрузке", "0–14 дней"),
+        ("Море или ж/д", "45–90 дней"),
+        ("Таможня", "7–14 дней"),
+        ("Центральный РЦ", "3–7 дней"),
+        ("Региональный РЦ", "3–10 дней"),
+        ("Магазин", "Продажа"),
     ]
-    flow = go.Figure(go.Sankey(
-        arrangement="fixed",
-        node={
-            "label": labels,
-            "x": [0.02, 0.16, 0.30, 0.44, 0.58, 0.72, 0.86, 0.98],
-            "y": [0.42] * 8,
-            "pad": 14,
-            "thickness": 16,
-            "line": {"color": "#FFFFFF", "width": 1},
-            "color": [MUTED, MUTED, AMBER, INDIGO, INDIGO, INDIGO, INDIGO, MUTED],
-        },
-        link={
-            "source": list(range(7)),
-            "target": list(range(1, 8)),
-            "value": [1] * 7,
-            "color": ["rgba(89,105,198,0.24)"] * 7,
-        },
-    ))
-    _chart_layout(flow, height=300)
-    flow.update_layout(margin={"l": 8, "r": 8, "t": 40, "b": 18})
-    flow.add_annotation(x=0.08, y=1.12, xref="paper", yref="paper", text="S&OP · план закупок", showarrow=False, font={"color": MUTED, "size": 11})
-    flow.add_annotation(x=0.57, y=1.12, xref="paper", yref="paper", text="S&OE · срок, маршрут, распределение", showarrow=False, font={"color": NAVY, "size": 11})
-    flow.add_annotation(x=0.97, y=1.12, xref="paper", yref="paper", text="Продажи", showarrow=False, font={"color": MUTED, "size": 11})
-    st.plotly_chart(flow, width="stretch", config={"displayModeBar": False})
+    stage_cards = "".join(
+        f'<div class="soe-flow-step"><i>Этап {index:02}</i><b>{name}</b><small>{duration}</small></div>'
+        for index, (name, duration) in enumerate(stages, start=1)
+    )
+    st.markdown(
+        '<div class="soe-flow-zones"><span class="soe-flow-sop">S&OP · план закупок</span>'
+        '<span class="soe-flow-soe">S&OE · срок, маршрут, распределение</span>'
+        '<span class="soe-flow-sales">Продажи</span></div>'
+        f'<div class="soe-flow-steps">{stage_cards}</div>',
+        unsafe_allow_html=True,
+    )
 
     stage_order = ["ready_not_shipped", "sea", "rail", "port", "customs", "received_dc"]
     shipment_counts = data["shipments"].groupby("stage").size().reindex(stage_order, fill_value=0)

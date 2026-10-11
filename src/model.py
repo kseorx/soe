@@ -456,29 +456,55 @@ def _avg_last_demand(data: dict[str, pd.DataFrame], sku: str, bu_id: str) -> flo
 
 
 def scenario_options(data: dict[str, pd.DataFrame], event: pd.Series, import_day: int) -> pd.DataFrame:
-    """Return a small, explainable set of allocation options for the chosen event."""
+    """Compare no action with a transfer limited to stock above donor safety stock."""
     sku = event["sku"]
     bu_id = event.get("bu_id", "BU-CENTER")
 
     item = data["skus"][data["skus"]["sku"] == sku].iloc[0]
-    inv = data["inventory"][(data["inventory"]["sku"] == sku) & (data["inventory"]["bu_id"] == bu_id)]
-    if inv.empty:
-        inv = data["inventory"][data["inventory"]["sku"] == sku].head(1)
-    source_row = data["inventory"][(data["inventory"]["sku"] == sku) & (data["inventory"]["bu_id"] != bu_id)].head(1)
-    source_free = 0
-    if not source_row.empty:
-        source_free = max(0, int(source_row.iloc[0]["on_hand"]) - int(source_row.iloc[0]["reserved"]) - int(source_row.iloc[0].get("safety_stock", 0)) if "safety_stock" in source_row.iloc[0] else 0)
+    inventory = data["inventory"]
+    target_inventory = inventory[
+        (inventory["sku"] == sku)
+        & (inventory["bu_id"] == bu_id)
+        & (inventory["location_type"] == "dc")
+    ]
+    if target_inventory.empty:
+        target_inventory = inventory[(inventory["sku"] == sku) & (inventory["bu_id"] == bu_id)]
+    initial = int((target_inventory["on_hand"] - target_inventory["reserved"]).clip(lower=0).sum())
 
-    initial = max(0, int(inv.iloc[0]["on_hand"]) - int(inv.iloc[0]["reserved"]))
-    demand = _avg_last_demand(data, sku, bu_id)
-    if demand <= 0:
-        demand = float(item["retail_price"]) / 25.0
+    weekly_demand = _avg_last_demand(data, sku, bu_id)
+    if weekly_demand <= 0:
+        weekly_demand = float(item["retail_price"]) / 25.0
+    daily_demand = weekly_demand / 7.0
 
-    donor_qty = min(530, source_free)
+    donor_inventory = inventory[
+        (inventory["sku"] == sku)
+        & (inventory["bu_id"] != bu_id)
+        & inventory["transferable"]
+    ].copy()
+    donor_free_by_bu = (
+        donor_inventory.assign(free_qty=(donor_inventory["on_hand"] - donor_inventory["reserved"]).clip(lower=0))
+        .groupby("bu_id")["free_qty"]
+        .sum()
+    )
+    donor_safety = data["planning_params"][(data["planning_params"]["sku"] == sku)]
+    donor_surplus = 0
+    for donor_bu, free_qty in donor_free_by_bu.items():
+        safety_rows = donor_safety[donor_safety["bu_id"] == donor_bu]
+        safety_stock = int(safety_rows.iloc[0]["safety_stock"]) if not safety_rows.empty else 0
+        donor_surplus += max(0, int(free_qty) - safety_stock)
+
+    stock_at_arrival = max(0.0, initial - daily_demand * (import_day - 1))
+    demand_after_arrival = daily_demand * (28 - import_day + 1)
+    useful_transfer_qty = int(np.ceil(max(0.0, demand_after_arrival - stock_at_arrival)))
+    donor_qty = min(530, donor_surplus, useful_transfer_qty)
+    transfer_limit = (
+        "Свободный запас сверх страхового; максимум 530 ед."
+        if donor_qty
+        else "Нет подтверждённого дефицита или свободного запаса сверх страхового"
+    )
     alternatives = [
-        {"Вариант": "Без вмешательства", "Операция, ед.": 0, "Логистика, ₽": 0, "Закупка, ₽": 0, "Ограничение": "Базовый сценарий"},
-        {"Вариант": "Межрегиональный трансфер", "Операция, ед.": donor_qty, "Логистика, ₽": donor_qty * 15, "Закупка, ₽": 0, "Ограничение": "Проверен запас источника; максимум 530 ед." if donor_qty else "Нет свободного ресурса после резервирования"},
-        {"Вариант": "Срочное локальное пополнение", "Операция, ед.": 300, "Логистика, ₽": 0, "Закупка, ₽": 300 * int(item["unit_cost"]), "Ограничение": "Лимит срочного пополнения: 300 ед."},
+        {"Вариант": "Без вмешательства", "Операция, ед.": 0, "Логистика, ₽": 0, "Ограничение": "Базовый сценарий"},
+        {"Вариант": "Межрегиональный трансфер из свободного запаса", "Операция, ед.": donor_qty, "Логистика, ₽": donor_qty * 15, "Ограничение": transfer_limit},
     ]
 
     results = []
@@ -492,24 +518,23 @@ def scenario_options(data: dict[str, pd.DataFrame], event: pd.Series, import_day
         for day in range(1, 29):
             if day == import_day:
                 stock += qty
-            if day >= import_day:
-                fulfilled = min(stock, demand)
-                deficit += max(0.0, demand - fulfilled)
-                stock = max(0, stock - fulfilled)
-            else:
-                fulfilled = min(stock, demand)
-                deficit_before += max(0.0, demand - fulfilled)
-                stock = max(0, stock - fulfilled)
+            fulfilled = min(stock, daily_demand)
+            daily_deficit = max(0.0, daily_demand - fulfilled)
+            deficit += daily_deficit
+            if day < import_day:
+                deficit_before += daily_deficit
+            stock = max(0.0, stock - fulfilled)
             min_stock = min(min_stock, stock)
             stock_days += stock
         total_cost = int(
             deficit * float(item["lost_sale_penalty"])
-            + stock_days * float(item["holding_cost_week"]) / 28
+            + stock_days * float(item["holding_cost_week"]) / 7
             + option["Логистика, ₽"]
-            + option["Закупка, ₽"]
         )
-        service = max(0.0, 100 * (1 - deficit / max(demand * 28, 1)))
-        service_before = max(0.0, 100 * (1 - deficit_before / max(demand * max(0, import_day - 1), 1)))
+        total_demand = daily_demand * 28
+        service = max(0.0, 100 * (1 - deficit / max(total_demand, 1)))
+        demand_before = daily_demand * max(0, import_day - 1)
+        service_before = max(0.0, 100 * (1 - deficit_before / max(demand_before, 1)))
         results.append(
             {
                 "Вариант": option["Вариант"],
@@ -520,7 +545,6 @@ def scenario_options(data: dict[str, pd.DataFrame], event: pd.Series, import_day
                 "Остаток на конец, ед.": int(stock),
                 "Минимальный остаток, ед.": int(min_stock),
                 "Логистика, ₽": int(option["Логистика, ₽"]),
-                "Закупка, ₽": int(option["Закупка, ₽"]),
                 "Итого, ₽": int(total_cost),
                 "Операция, ед.": qty,
                 "Ограничение": option["Ограничение"],
@@ -542,17 +566,20 @@ def optimize_transfer(data: dict[str, pd.DataFrame], event: pd.Series, import_da
         return {"status": "failed", "message": "Нет доступных вариантов для расчёта."}
 
     model = pulp.LpProblem("soe_domovoy_choice", pulp.LpMinimize)
-    choices = [pulp.LpVariable(f"alt_{idx}", cat="Binary") for idx in range(len(options))]
-    model += pulp.lpSum(float(cost) * choice for cost, choice in zip(options["Итого, ₽"].tolist(), choices))
+    feasible_options = options[
+        (options["Вариант"] == "Без вмешательства") | (options["Операция, ед."] > 0)
+    ].reset_index(drop=True)
+    choices = [pulp.LpVariable(f"alt_{idx}", cat="Binary") for idx in range(len(feasible_options))]
+    model += pulp.lpSum(float(cost) * choice for cost, choice in zip(feasible_options["Итого, ₽"].tolist(), choices))
     model += pulp.lpSum(choices) == 1
-
-    for idx, row in options.iterrows():
-        if row["Вариант"] == "Межрегиональный трансфер":
-            model += int(row["Операция, ед."]) <= 530
 
     status = model.solve(pulp.PULP_CBC_CMD(msg=False))
     if pulp.LpStatus[status] != "Optimal":
         return {"status": "failed", "message": f"Оптимизатор не нашёл оптимальное решение: {pulp.LpStatus[status]}"}
 
     selected_idx = next(i for i, choice in enumerate(choices) if pulp.value(choice) == 1)
-    return {"status": "optimal", "message": "Решение найдено CBC для демонстрационной модели.", "option": options.iloc[selected_idx].to_dict()}
+    return {
+        "status": "optimal",
+        "message": "Выбран вариант с минимальными модельными затратами среди доступных мер без новой закупки.",
+        "option": feasible_options.iloc[selected_idx].to_dict(),
+    }
