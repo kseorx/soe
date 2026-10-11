@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from html import escape
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -42,6 +44,16 @@ def _apply_visual_style() -> None:
             color: #263A82; border-bottom-color: #F5A000;
         }
         [data-testid="stDataFrame"] { border: 1px solid #DCE2EB; }
+        .soe-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 185px), 1fr)); gap: 10px; margin: 12px 0; }
+        .soe-metric-card { min-width: 0; min-height: 86px; padding: 12px 14px; background: #FFFFFF; border-left: 4px solid #5969C6; border-radius: 4px; }
+        .soe-metric-label { display: block; color: #68788E; font-size: 13px; line-height: 1.3; overflow-wrap: anywhere; }
+        .soe-metric-value { display: block; margin-top: 7px; color: #24344E; font-size: 21px; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere; }
+        .soe-metric-note { display: block; margin-top: 4px; color: #68788E; font-size: 12px; line-height: 1.3; overflow-wrap: anywhere; }
+        .soe-case-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: 10px; margin: 12px 0; }
+        .soe-case-card { min-width: 0; padding: 12px 14px; background: #FFFFFF; border-top: 3px solid #5969C6; border-radius: 4px; }
+        .soe-case-card-critical { border-top-color: #D85B50; }
+        .soe-case-title { color: #263A82; font-size: 15px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+        .soe-case-detail { margin-top: 5px; color: #68788E; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
         .soe-flow-zones { display: grid; grid-template-columns: 1fr 4fr 1fr; gap: 8px; margin: 12px 0; }
         .soe-flow-zones span { padding: 8px; text-align: center; font-size: 13px; font-weight: 600; }
         .soe-flow-sop { background: #E8ECF5; color: #68788E; }
@@ -58,6 +70,7 @@ def _apply_visual_style() -> None:
             .soe-flow-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
             .soe-flow-step { min-height: 82px; padding: 10px; }
             .soe-flow-zones span { font-size: 11px; padding: 7px 3px; }
+            .soe-metric-value { font-size: 19px; }
         }
         </style>
         """,
@@ -69,16 +82,29 @@ def _chart_layout(figure: go.Figure, *, height: int = 340) -> go.Figure:
     figure.update_layout(
         template="plotly_white",
         height=height,
-        margin={"l": 20, "r": 20, "t": 22, "b": 24},
+        autosize=True,
+        margin={"l": 64, "r": 44, "t": 58, "b": 58},
         font={"family": "Aptos, Segoe UI, sans-serif", "color": INK, "size": 12},
         paper_bgcolor="rgba(255,255,255,0)",
         plot_bgcolor="#FFFFFF",
         colorway=[INDIGO, AMBER, MID_BLUE, NAVY],
         xaxis={"gridcolor": GRID, "zerolinecolor": GRID},
         yaxis={"gridcolor": GRID, "zerolinecolor": GRID},
-        legend={"orientation": "h", "y": 1.12, "x": 0},
+        legend={"orientation": "h", "y": 1.08, "x": 0},
     )
     return figure
+
+
+def _render_metric_cards(items: list[tuple[str, str, str]]) -> None:
+    cards = "".join(
+        '<article class="soe-metric-card">'
+        f'<span class="soe-metric-label">{escape(label)}</span>'
+        f'<strong class="soe-metric-value">{escape(value)}</strong>'
+        f'<span class="soe-metric-note">{escape(note)}</span>'
+        "</article>"
+        for label, value, note in items
+    )
+    st.markdown(f'<div class="soe-metric-grid">{cards}</div>', unsafe_allow_html=True)
 
 TRIGGER_LABELS = {
     "corridor_low": "Риск дефицита",
@@ -163,19 +189,18 @@ def _render_problem_panel(events: pd.DataFrame, data: dict[str, pd.DataFrame]) -
     st.caption("Операционный S&OE-контур: выявить риск, назначить владельца, сравнить допустимые меры")
     st.info("Объём закупки не меняется в S&OE. После отгрузки доступны только действия по сроку, маршруту и распределению.")
 
-    cadence = st.columns(5)
-    for column, label in zip(cadence, ["Пн · данные", "Вт · регионы", "Ср · импорт", "Чт · совещание", "Пт · исполнение"]):
-        column.markdown(f"**{label}**")
+    st.caption("Пн · данные  →  Вт · регионы  →  Ср · импорт  →  Чт · совещание  →  Пт · исполнение")
     st.caption("Четверговая встреча: до 60 минут, в повестке не более 8 неразрешённых споров.")
 
     active_events = events[~events["status"].isin(["decided", "executed"])].copy()
     fast_track_events = active_events[active_events["fast_track"]]
     session_events = active_events[active_events["status"] == "to_session"]
-    metrics = st.columns(4)
-    metrics[0].metric("Проблемы в работе", len(active_events))
-    metrics[1].metric("Деньги под риском", f"{active_events['risk_rub'].sum() / 1_000_000:.1f} млн ₽")
-    metrics[2].metric("Экспресс-трек", len(fast_track_events), help="Порт/дефект или сдвиг ETA более 5 дней; срок решения — 48 часов.")
-    metrics[3].metric("На четверговой встрече", len(session_events), delta="лимит 8 случаев")
+    _render_metric_cards([
+        ("Проблемы в работе", str(len(active_events)), "Открытые кейсы"),
+        ("Деньги под риском", f"{active_events['risk_rub'].sum() / 1_000_000:.1f} млн ₽", "Сумма по открытым кейсам"),
+        ("Экспресс-трек", str(len(fast_track_events)), "Решение в течение 48 часов"),
+        ("Четверговая встреча", str(len(session_events)), "Не более 8 споров"),
+    ])
 
     if active_events.empty:
         st.success("По выбранному срезу открытых проблем нет.")
@@ -184,18 +209,18 @@ def _render_problem_panel(events: pd.DataFrame, data: dict[str, pd.DataFrame]) -
     priority_queue = active_events.sort_values(["risk_rub", "risk_score"], ascending=False).head(8).copy()
     st.subheader("Приоритетная очередь")
     st.caption("Кандидаты для разбора отсортированы по сумме риска; окончательное решение остаётся за владельцами процесса.")
-    queue_display = priority_queue[["event_id", "trigger", "bu_id", "sku", "priority", "risk_rub", "stage", "status", "fast_track"]].copy()
-    queue_display["trigger"] = queue_display["trigger"].map(TRIGGER_LABELS)
-    queue_display["stage"] = queue_display["stage"].map(STAGE_LABELS)
-    queue_display["status"] = queue_display["status"].map(STATUS_LABELS)
-    queue_display["risk_rub"] = queue_display["risk_rub"].map(lambda value: f"{value:,.0f} ₽".replace(",", " "))
-    queue_display["fast_track"] = queue_display["fast_track"].map({True: "≤ 48 ч", False: "Обычный"})
-    queue_display = queue_display.rename(columns={
-        "event_id": "Кейс", "trigger": "Проблема", "bu_id": "БЕ", "sku": "SKU",
-        "priority": "Приоритет", "risk_rub": "Риск", "stage": "Этап поставки",
-        "status": "Статус", "fast_track": "Срок",
-    })
-    st.dataframe(queue_display, width="stretch", hide_index=True)
+    case_cards = []
+    for _, case in priority_queue.iterrows():
+        priority_class = " soe-case-card-critical" if case["priority"] == "Критический" else ""
+        case_cards.append(
+            f'<article class="soe-case-card{priority_class}">'
+            f'<div class="soe-case-title">{escape(case["event_id"])} · {escape(TRIGGER_LABELS[case["trigger"]])}</div>'
+            f'<div class="soe-case-detail">{escape(case["priority"])} · риск {case["risk_rub"] / 1000:.0f} тыс. ₽</div>'
+            f'<div class="soe-case-detail">{escape(case["bu_id"])} · {escape(case["sku"])} · {escape(STAGE_LABELS[case["stage"]])}</div>'
+            f'<div class="soe-case-detail">{escape(STATUS_LABELS[case["status"]])} · {"экспресс ≤ 48 ч" if case["fast_track"] else "обычный срок"}</div>'
+            "</article>"
+        )
+    st.markdown(f'<div class="soe-case-grid">{"".join(case_cards)}</div>', unsafe_allow_html=True)
 
     event_labels = {
         row["event_id"]: f"{row['event_id']} · {TRIGGER_LABELS[row['trigger']]} · {row['risk_rub'] / 1000:.0f} тыс. ₽"
@@ -217,15 +242,16 @@ def _render_problem_panel(events: pd.DataFrame, data: dict[str, pd.DataFrame]) -
     eta_shift_days = int(event["eta_shift_days"])
     eta_value = f"+{eta_shift_days} дн." if eta_shift_days > 0 else f"{abs(eta_shift_days)} дн."
     eta_delta = "позже плана" if eta_shift_days > 0 else "раньше плана" if eta_shift_days < 0 else "по плану"
-    metric_rows = [st.columns(2) for _ in range(4)]
-    metric_rows[0][0].metric("Причина", TRIGGER_LABELS[event["trigger"]])
-    metric_rows[0][1].metric("Ответственный", event["owner_role"])
-    metric_rows[1][0].metric("Бизнес-единица", event["bu_id"])
-    metric_rows[1][1].metric("До влияния", f"{event['weeks_to_impact']} нед.")
-    metric_rows[2][0].metric("Отклонение ETA", eta_value, delta=eta_delta)
-    metric_rows[2][1].metric("Этап поставки", STAGE_LABELS[shipment_stage])
-    metric_rows[3][0].metric("Риск события", f"{event['risk_rub'] / 1000:.0f} тыс. ₽")
-    metric_rows[3][1].metric("Приоритет", event["priority"])
+    _render_metric_cards([
+        ("Причина", TRIGGER_LABELS[event["trigger"]], "Тип события"),
+        ("Ответственный", str(event["owner_role"]), "Владелец кейса"),
+        ("Бизнес-единица", str(event["bu_id"]), "Региональный дивизион"),
+        ("До влияния", f"{event['weeks_to_impact']} нед.", "Оценка горизонта"),
+        ("Отклонение ETA", eta_value, eta_delta),
+        ("Этап поставки", STAGE_LABELS[shipment_stage], "Текущая зона управления"),
+        ("Риск события", f"{event['risk_rub'] / 1000:.0f} тыс. ₽", "Под риском"),
+        ("Приоритет", str(event["priority"]), "Очередь разбора"),
+    ])
 
     if zone is not None:
         permitted_actions = ", ".join(LEVER_LABELS[lever] for lever in zone["levers"])
@@ -260,7 +286,7 @@ def _render_problem_panel(events: pd.DataFrame, data: dict[str, pd.DataFrame]) -
         yaxis={"autorange": "reversed"},
         showlegend=False,
     )
-    st.plotly_chart(_chart_layout(service_chart, height=190 if len(visible_options) == 1 else 240), width="stretch", config={"displayModeBar": False})
+    st.plotly_chart(_chart_layout(service_chart, height=230 if len(visible_options) == 1 else 280), width="stretch", config={"displayModeBar": False, "responsive": True})
     for _, scenario in visible_options.iterrows():
         with st.expander(f"{scenario['Вариант']} · {scenario['Выполнение спроса, %']:.1f}% спроса"):
             detail_cols = st.columns(2)
@@ -342,7 +368,7 @@ def _render_flow(data: dict[str, pd.DataFrame]) -> None:
     ))
     stage_counts.update_layout(xaxis_title="Число партий", yaxis={"autorange": "reversed"})
     st.subheader("Партии в пути по этапам")
-    st.plotly_chart(_chart_layout(stage_counts, height=300), width="stretch", config={"displayModeBar": False})
+    st.plotly_chart(_chart_layout(stage_counts, height=380), width="stretch", config={"displayModeBar": False, "responsive": True})
 
     st.subheader("Заморозка решений по этапам")
     for _, zone in data["freeze_zones"].iterrows():
@@ -369,16 +395,14 @@ def _render_flow(data: dict[str, pd.DataFrame]) -> None:
 
 def _render_allocation_rules(data: dict[str, pd.DataFrame]) -> None:
     st.subheader("Общие правила заявок и распределения")
-    rule_cols = st.columns(3)
     releases = data["request_releases"]
     released_qty = int(releases["qty"].sum()) if not releases.empty else 0
     refusal_compensation = int(releases["compensation_rub"].sum()) if not releases.empty else 0
-    rule_cols[0].metric("Отказ от firm-заявки", "Компенсируемый")
-    rule_cols[0].caption(f"В примере: высвобождено {released_qty} ед.; компенсация {refusal_compensation:,.0f} ₽.".replace(",", " "))
-    rule_cols[1].metric("Сверх заявок", "Не более 10%")
-    rule_cols[1].caption("Лимит применяется к закупочному объёму импорта и утверждается в месячном S&OP.")
-    rule_cols[2].metric("Дефицит", "Равное покрытие")
-    rule_cols[2].caption("Ограниченный лот направляется туда, где он выравнивает запас в днях между дивизионами.")
+    _render_metric_cards([
+        ("Отказ от firm-заявки", "Платный", f"В примере: {released_qty} ед.; компенсация {refusal_compensation:,.0f} ₽.".replace(",", " ")),
+        ("Сверх заявок", "Не более 10%", "Лимит закупочного объёма утверждает месячный S&OP."),
+        ("Дефицит", "Равное покрытие", "Ограниченный лот выравнивает запас в днях между дивизионами."),
+    ])
 
     with st.expander("Симулятор распределения дефицитного лота"):
         trade_units = data["business_units"].query("bu_type == 'trade'")
@@ -454,28 +478,26 @@ def _render_analytics(data: dict[str, pd.DataFrame], selected_bu: str, selected_
         "CAT-DECOR": "Декор",
     })
 
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Продажи и потенциальный спрос")
-        sales_figure = go.Figure()
-        sales_figure.add_trace(go.Scatter(
-            x=sales_trend["week_start"], y=sales_trend["Потенциальный спрос"],
-            name="Потенциальный спрос", mode="lines", line={"color": MID_BLUE, "width": 2, "dash": "dot"},
-        ))
-        sales_figure.add_trace(go.Scatter(
-            x=sales_trend["week_start"], y=sales_trend["Факт продаж"],
-            name="Факт продаж", mode="lines", line={"color": NAVY, "width": 3},
-            fill="tozeroy", fillcolor="rgba(89,105,198,0.10)",
-        ))
-        sales_figure.update_layout(yaxis_title="Единиц", hovermode="x unified")
-        st.plotly_chart(_chart_layout(sales_figure, height=340), width="stretch", config={"displayModeBar": False})
-    with right:
-        st.subheader("Остаток против страхового запаса")
-        stock_figure = go.Figure()
-        stock_figure.add_trace(go.Bar(y=stock_by_category["Короткая категория"], x=stock_by_category["Доступный остаток"], name="Доступный остаток", orientation="h", marker_color=INDIGO))
-        stock_figure.add_trace(go.Bar(y=stock_by_category["Короткая категория"], x=stock_by_category["Страховой запас"], name="Страховой запас", orientation="h", marker_color=AMBER))
-        stock_figure.update_layout(barmode="group", xaxis_title="Единиц", yaxis={"autorange": "reversed", "automargin": True})
-        st.plotly_chart(_chart_layout(stock_figure, height=340), width="stretch", config={"displayModeBar": False})
+    st.subheader("Продажи и потенциальный спрос")
+    sales_figure = go.Figure()
+    sales_figure.add_trace(go.Scatter(
+        x=sales_trend["week_start"], y=sales_trend["Потенциальный спрос"],
+        name="Потенциальный спрос", mode="lines", line={"color": MID_BLUE, "width": 2, "dash": "dot"},
+    ))
+    sales_figure.add_trace(go.Scatter(
+        x=sales_trend["week_start"], y=sales_trend["Факт продаж"],
+        name="Факт продаж", mode="lines", line={"color": NAVY, "width": 3},
+        fill="tozeroy", fillcolor="rgba(89,105,198,0.10)",
+    ))
+    sales_figure.update_layout(yaxis_title="Единиц", hovermode="x unified")
+    st.plotly_chart(_chart_layout(sales_figure, height=390), width="stretch", config={"displayModeBar": False, "responsive": True})
+
+    st.subheader("Остаток против страхового запаса")
+    stock_figure = go.Figure()
+    stock_figure.add_trace(go.Bar(y=stock_by_category["Короткая категория"], x=stock_by_category["Доступный остаток"], name="Доступный остаток", orientation="h", marker_color=INDIGO))
+    stock_figure.add_trace(go.Bar(y=stock_by_category["Короткая категория"], x=stock_by_category["Страховой запас"], name="Страховой запас", orientation="h", marker_color=AMBER))
+    stock_figure.update_layout(barmode="group", xaxis_title="Единиц", yaxis={"autorange": "reversed", "automargin": True})
+    st.plotly_chart(_chart_layout(stock_figure, height=390), width="stretch", config={"displayModeBar": False, "responsive": True})
 
     events = _prepare_events(data, selected_bu, selected_category)
     active_events = events[~events["status"].isin(["decided", "executed"])]
@@ -492,39 +514,33 @@ def _render_analytics(data: dict[str, pd.DataFrame], selected_bu: str, selected_
         hovertemplate="%{x}: %{y} событий<extra></extra>",
     ))
     priority_figure.update_layout(yaxis_title="Число событий")
-    st.plotly_chart(_chart_layout(priority_figure, height=300), width="stretch", config={"displayModeBar": False})
+    st.plotly_chart(_chart_layout(priority_figure, height=360), width="stretch", config={"displayModeBar": False, "responsive": True})
     st.caption("Доступность в графиках — среднее значение синтетического in-stock share, не целевой KPI пилота.")
 
 
 def _render_pilot_targets() -> None:
     st.title("Цели и критерии пилота")
     st.caption("Ориентиры из питч-дека. Это целевые значения проекта, а не факт синтетической модели.")
-    st.metric("Ожидаемый годовой эффект", "≈ 1,3% выручки импорта")
+    _render_metric_cards([("Ожидаемый годовой эффект", "≈ 1,3%", "От выручки импорта · оценка презентации")])
 
-    left, right = st.columns([1.25, 1])
-    with left:
-        st.subheader("Экономический эффект")
-        st.caption("млн ₽ в год на каждые 10 млрд ₽ выручки импорта · оценка из презентации")
-        effect = go.Figure(go.Waterfall(
-            measure=["relative", "relative", "relative", "relative", "total"],
-            x=["Рост наличия", "Меньше уценок", "Оборотный капитал", "Меньше срочных мер", "Итого"],
-            y=[42, 40, 40, 5, 0],
-            text=["42", "40", "40", "5", "127"],
-            textposition="outside",
-            connector={"line": {"color": GRID, "width": 1}},
-            increasing={"marker": {"color": MID_BLUE}},
-            totals={"marker": {"color": NAVY}},
-            hovertemplate="%{x}: %{y} млн ₽<extra></extra>",
-        ))
-        effect.update_layout(yaxis_title="млн ₽ в год", showlegend=False)
-        st.plotly_chart(_chart_layout(effect, height=350), width="stretch", config={"displayModeBar": False})
-    with right:
-        st.subheader("Прогноз эффекта пилота")
-        st.markdown(
-            "**Рост наличия** — главный эффект, обязательный для приёмки.\n\n"
-            "Снижение уценок и ускорение оборота высвобождают деньги; меньше срочных мер снижает дополнительные расходы.\n\n"
-            "Оценка модельная: проверяется сравнением с контрольными категориями и прошлым сезоном."
-        )
+    st.subheader("Экономический эффект")
+    st.caption("млн ₽ в год на каждые 10 млрд ₽ выручки импорта · оценка из презентации")
+    effect = go.Figure(go.Waterfall(
+        measure=["relative", "relative", "relative", "relative", "total"],
+        x=["Наличие", "Уценки", "Оборот", "Срочные меры", "Итого"],
+        y=[42, 40, 40, 5, 0],
+        text=["42", "40", "40", "5", "127"],
+        textposition="outside",
+        connector={"line": {"color": GRID, "width": 1}},
+        increasing={"marker": {"color": MID_BLUE}},
+        totals={"marker": {"color": NAVY}},
+        hovertemplate="%{x}: %{y} млн ₽<extra></extra>",
+    ))
+    effect.update_layout(yaxis_title="млн ₽ в год", showlegend=False, xaxis={"automargin": True})
+    st.plotly_chart(_chart_layout(effect, height=430), width="stretch", config={"displayModeBar": False, "responsive": True})
+    st.markdown(
+        "**Рост наличия** — главный эффект, обязательный для приёмки. Снижение уценок и ускорение оборота высвобождают деньги; меньше срочных мер снижает дополнительные расходы."
+    )
 
     st.subheader("Риски внедрения")
     risk_names = [
@@ -556,21 +572,20 @@ def _render_pilot_targets() -> None:
         showlegend=False,
     ))
     matrix.update_layout(
-        xaxis={"title": "Вероятность", "tickvals": [1, 2, 3, 4], "ticktext": ["Низкая", "Средняя", "Высокая", "Очень высокая"], "range": [0.5, 4.5], "showgrid": False},
-        yaxis={"title": "Влияние", "tickvals": [1, 2, 3, 4], "ticktext": ["Низкое", "Среднее", "Высокое", "Критическое"], "range": [0.5, 4.5], "showgrid": False},
+        xaxis={"title": "Вероятность", "tickvals": [1, 2, 3, 4], "ticktext": ["Низкая", "Средняя", "Высокая", "Очень высокая"], "range": [0.5, 4.5], "showgrid": False, "automargin": True},
+        yaxis={"title": "Влияние", "tickvals": [1, 2, 3, 4], "ticktext": ["Низкое", "Среднее", "Высокое", "Критическое"], "range": [0.5, 4.5], "showgrid": False, "automargin": True},
     )
-    left, right = st.columns([1, 1.2])
-    with left:
-        st.plotly_chart(_chart_layout(matrix, height=380), width="stretch", config={"displayModeBar": False})
-    with right:
-        mitigations = pd.DataFrame([
-            {"№": 1, "Риск": risk_names[0], "Мера": "Правила утверждаются S&OP; отказ от заявки дешевле до отгрузки"},
-            {"№": 2, "Риск": risk_names[1], "Мера": "На пилоте ETA вводится вручную, затем подключается API"},
-            {"№": 3, "Риск": risk_names[2], "Мера": "На встречу выносится не более 8 споров"},
-            {"№": 4, "Риск": risk_names[3], "Мера": "Объёмы и бюджеты остаются в месячном S&OP"},
-            {"№": 5, "Риск": risk_names[4], "Мера": "Сравнение с контрольными категориями и сезоном"},
-        ])
-        st.dataframe(mitigations, width="stretch", hide_index=True)
+    st.plotly_chart(_chart_layout(matrix, height=440), width="stretch", config={"displayModeBar": False, "responsive": True})
+    mitigations = [
+        "Правила утверждаются S&OP; отказ от заявки дешевле до отгрузки.",
+        "На пилоте ETA вводится вручную, затем подключается API.",
+        "На встречу выносится не более 8 споров.",
+        "Объёмы и бюджеты остаются в месячном S&OP.",
+        "Сравнение с контрольными категориями, волнами внедрения и прошлым сезоном.",
+    ]
+    for index, (risk, mitigation) in enumerate(zip(risk_names, mitigations), start=1):
+        with st.expander(f"Риск {index} · {risk}"):
+            st.write(mitigation)
 
     targets = pd.DataFrame([
         {"Показатель": "Наличие импорта в магазине", "Было": "88%", "Цель": "91%", "Направление": "Рост"},
@@ -583,11 +598,12 @@ def _render_pilot_targets() -> None:
     st.dataframe(targets, width="stretch", hide_index=True)
 
     st.subheader("Контрольные результаты внедрения")
-    outcomes = st.columns(4)
-    outcomes[0].metric("Импорт в цикле к 14-му месяцу", "100%")
-    outcomes[1].metric("Проблемы решены за неделю", "≥ 85%")
-    outcomes[2].metric("Экспресс-решение", "≤ 48 ч")
-    outcomes[3].metric("Решается автоматически", "≥ 15%")
+    _render_metric_cards([
+        ("Импорт в цикле к 14-му месяцу", "100%", "Цель охвата импорта"),
+        ("Проблемы решены за неделю", "≥ 85%", "Целевой срок решения"),
+        ("Экспресс-решение", "≤ 48 ч", "Для срочных случаев"),
+        ("Решается автоматически", "≥ 15%", "После проверки правил на пилоте"),
+    ])
 
     st.subheader("Этапы и контрольные точки · 18 месяцев")
     roadmap = pd.DataFrame([
@@ -611,7 +627,7 @@ def _render_pilot_targets() -> None:
         xaxis={"title": "Месяц проекта", "tickvals": list(range(1, 19)), "range": [0.5, 18.5], "gridcolor": GRID},
         yaxis={"autorange": "reversed"}, showlegend=False,
     )
-    st.plotly_chart(_chart_layout(timeline, height=300), width="stretch", config={"displayModeBar": False})
+    st.plotly_chart(_chart_layout(timeline, height=380), width="stretch", config={"displayModeBar": False, "responsive": True})
     st.dataframe(roadmap, width="stretch", hide_index=True)
     st.subheader("Как проверяется эффект")
     comparison = pd.DataFrame([
