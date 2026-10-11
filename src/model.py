@@ -448,11 +448,11 @@ def generate_data(as_of: date | None = None, *, mode: str = "legacy", domovoy: b
     return generate_domovoy_data(as_of)
 
 
-def _avg_last_demand(data: dict[str, pd.DataFrame], sku: str, bu_id: str) -> float:
+def _avg_weekly_potential_demand(data: dict[str, pd.DataFrame], sku: str, bu_id: str) -> float:
     recent = data["sales_history"][(data["sales_history"]["sku"] == sku) & (data["sales_history"]["bu_id"] == bu_id)].tail(4)
     if recent.empty:
         return 0.0
-    return float(recent["actual_sales"].mean())
+    return float(recent["potential_demand"].mean())
 
 
 def scenario_options(data: dict[str, pd.DataFrame], event: pd.Series, import_day: int) -> pd.DataFrame:
@@ -471,7 +471,7 @@ def scenario_options(data: dict[str, pd.DataFrame], event: pd.Series, import_day
         target_inventory = inventory[(inventory["sku"] == sku) & (inventory["bu_id"] == bu_id)]
     initial = int((target_inventory["on_hand"] - target_inventory["reserved"]).clip(lower=0).sum())
 
-    weekly_demand = _avg_last_demand(data, sku, bu_id)
+    weekly_demand = _avg_weekly_potential_demand(data, sku, bu_id)
     if weekly_demand <= 0:
         weekly_demand = float(item["retail_price"]) / 25.0
     daily_demand = weekly_demand / 7.0
@@ -540,6 +540,8 @@ def scenario_options(data: dict[str, pd.DataFrame], event: pd.Series, import_day
                 "Вариант": option["Вариант"],
                 "Выполнение спроса, %": round(service, 1),
                 "Сервис до импорта, %": round(service_before, 1),
+                "Спрос за 28 дней, ед.": int(round(total_demand)),
+                "Запас РЦ на старте, ед.": initial,
                 "Дефицит, ед.": int(round(deficit)),
                 "Дефицит до импорта, ед.": int(round(deficit_before)),
                 "Остаток на конец, ед.": int(stock),

@@ -208,12 +208,18 @@ def _render_problem_panel(events: pd.DataFrame, data: dict[str, pd.DataFrame]) -
     )
 
     st.subheader(f"Карточка кейса {event['event_id']}")
-    case_metrics = st.columns(5)
-    case_metrics[0].metric("Причина", TRIGGER_LABELS[event["trigger"]])
-    case_metrics[1].metric("Владелец", event["owner_role"])
-    case_metrics[2].metric("Влияние через", f"{event['weeks_to_impact']} нед.")
-    case_metrics[3].metric("Сдвиг ETA", f"{event['eta_shift_days']} дн.")
-    case_metrics[4].metric("Текущий этап", STAGE_LABELS[shipment_stage])
+    eta_shift_days = int(event["eta_shift_days"])
+    eta_value = f"+{eta_shift_days} дн." if eta_shift_days > 0 else f"{abs(eta_shift_days)} дн."
+    eta_delta = "позже плана" if eta_shift_days > 0 else "раньше плана" if eta_shift_days < 0 else "по плану"
+    metric_rows = [st.columns(2) for _ in range(4)]
+    metric_rows[0][0].metric("Причина", TRIGGER_LABELS[event["trigger"]])
+    metric_rows[0][1].metric("Ответственный", event["owner_role"])
+    metric_rows[1][0].metric("Бизнес-единица", event["bu_id"])
+    metric_rows[1][1].metric("До влияния", f"{event['weeks_to_impact']} нед.")
+    metric_rows[2][0].metric("Отклонение ETA", eta_value, delta=eta_delta)
+    metric_rows[2][1].metric("Этап поставки", STAGE_LABELS[shipment_stage])
+    metric_rows[3][0].metric("Риск события", f"{event['risk_rub'] / 1000:.0f} тыс. ₽")
+    metric_rows[3][1].metric("Приоритет", event["priority"])
 
     if zone is not None:
         permitted_actions = ", ".join(LEVER_LABELS[lever] for lever in zone["levers"])
@@ -252,6 +258,8 @@ def _render_problem_panel(events: pd.DataFrame, data: dict[str, pd.DataFrame]) -
     for _, scenario in visible_options.iterrows():
         with st.expander(f"{scenario['Вариант']} · {scenario['Выполнение спроса, %']:.1f}% спроса"):
             detail_cols = st.columns(2)
+            detail_cols[0].write(f"Потенциальный спрос за 28 дней: **{scenario['Спрос за 28 дней, ед.']} ед.**")
+            detail_cols[1].write(f"Доступно на РЦ: **{scenario['Запас РЦ на старте, ед.']} ед.**")
             detail_cols[0].write(f"Дефицит за 28 дней: **{scenario['Дефицит, ед.']} ед.**")
             detail_cols[1].write(f"Общие модельные затраты: **{scenario['Итого, ₽']:,.0f} ₽**".replace(",", " "))
             detail_cols[0].write(f"Операция: **{scenario['Операция, ед.']} ед.**")
@@ -268,7 +276,12 @@ def _render_problem_panel(events: pd.DataFrame, data: dict[str, pd.DataFrame]) -
     if result["status"] == "optimal":
         option = result["option"]
         if option["Вариант"] == "Без вмешательства" and option["Дефицит, ед."] == 0:
-            st.success("Рекомендация: без вмешательства. Доступный запас РЦ покрывает расчётный спрос на всём 28-дневном горизонте; переводить резерв в эту БЕ не требуется.")
+            st.success(
+                f"Рекомендация: без вмешательства. Для выбранного SKU/БЕ запас РЦ "
+                f"{option['Запас РЦ на старте, ед.']} ед. покрывает потенциальный "
+                f"спрос {option['Спрос за 28 дней, ед.']} ед. на 28-дневном горизонте. "
+                "Это покрытие одного кейса, не общий KPI пилота."
+            )
         else:
             st.success(result["message"])
         st.markdown(f"**Рекомендуемый вариант: {option['Вариант']}**")
@@ -370,6 +383,11 @@ def _render_analytics(data: dict[str, pd.DataFrame], selected_bu: str, selected_
         .sum()
         .rename(columns={"name": "Категория", "available_qty": "Доступный остаток", "safety_stock": "Страховой запас"})
     )
+    stock_by_category["Короткая категория"] = stock_by_category["category_id"].map({
+        "CAT-DISH": "Посуда / кухня",
+        "CAT-SDA": "МБТ",
+        "CAT-DECOR": "Декор",
+    })
 
     left, right = st.columns(2)
     with left:
@@ -389,9 +407,9 @@ def _render_analytics(data: dict[str, pd.DataFrame], selected_bu: str, selected_
     with right:
         st.subheader("Остаток против страхового запаса")
         stock_figure = go.Figure()
-        stock_figure.add_trace(go.Bar(x=stock_by_category["Категория"], y=stock_by_category["Доступный остаток"], name="Доступный остаток", marker_color=INDIGO))
-        stock_figure.add_trace(go.Bar(x=stock_by_category["Категория"], y=stock_by_category["Страховой запас"], name="Страховой запас", marker_color=AMBER))
-        stock_figure.update_layout(barmode="group", yaxis_title="Единиц")
+        stock_figure.add_trace(go.Bar(y=stock_by_category["Короткая категория"], x=stock_by_category["Доступный остаток"], name="Доступный остаток", orientation="h", marker_color=INDIGO))
+        stock_figure.add_trace(go.Bar(y=stock_by_category["Короткая категория"], x=stock_by_category["Страховой запас"], name="Страховой запас", orientation="h", marker_color=AMBER))
+        stock_figure.update_layout(barmode="group", xaxis_title="Единиц", yaxis={"autorange": "reversed", "automargin": True})
         st.plotly_chart(_chart_layout(stock_figure, height=340), width="stretch", config={"displayModeBar": False})
 
     events = _prepare_events(data, selected_bu, selected_category)

@@ -48,16 +48,29 @@ def test_scenario_uses_daily_demand_and_dc_stock_for_screenshot_case():
     baseline = options[options["Вариант"] == "Без вмешательства"].iloc[0]
     recent_sales = data["sales_history"]
     recent_sales = recent_sales[(recent_sales["sku"] == event["sku"]) & (recent_sales["bu_id"] == event["bu_id"])].tail(4)
-    daily_demand = float(recent_sales["actual_sales"].mean()) / 7
+    daily_demand = float(recent_sales["potential_demand"].mean()) / 7
     dc_stock = data["inventory"]
     dc_stock = dc_stock[(dc_stock["sku"] == event["sku"]) & (dc_stock["bu_id"] == event["bu_id"]) & (dc_stock["location_type"] == "dc")]
     available_stock = int((dc_stock["on_hand"] - dc_stock["reserved"]).clip(lower=0).sum())
     expected_deficit = max(0, round(daily_demand * 28 - available_stock))
 
     assert baseline["Дефицит, ед."] == expected_deficit
+    assert baseline["Спрос за 28 дней, ед."] == round(daily_demand * 28)
+    assert baseline["Запас РЦ на старте, ед."] == available_stock
     assert baseline["Выполнение спроса, %"] == round(100 * (1 - expected_deficit / (daily_demand * 28)), 1)
     assert baseline["Дефицит до импорта, ед."] <= baseline["Дефицит, ед."]
     assert baseline["Вариант"] == optimize_transfer(data, event, import_day=5)["option"]["Вариант"]
+
+
+def test_screenshot_event_uses_potential_demand_and_reports_covered_stock():
+    data = generate_domovoy_data(date(2026, 10, 5))
+    event = data["events"].iloc[39]
+    result = scenario_options(data, event, import_day=5).iloc[0]
+
+    assert result["Выполнение спроса, %"] == 100.0
+    assert result["Запас РЦ на старте, ед."] == 352
+    assert result["Спрос за 28 дней, ед."] == 117
+    assert result["Дефицит, ед."] == 0
 
 
 def test_transfer_uses_only_donor_stock_above_safety_stock():
