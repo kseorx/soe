@@ -1,12 +1,61 @@
 from __future__ import annotations
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from .model import generate_domovoy_data, optimize_transfer, scenario_options
 
 
 st.set_page_config(page_title="Домовой S&OE", layout="wide")
+
+NAVY = "#263A82"
+INDIGO = "#5969C6"
+MID_BLUE = "#8794D3"
+PALE_BLUE = "#E8ECF5"
+AMBER = "#F5A000"
+INK = "#24344E"
+MUTED = "#68788E"
+GRID = "#DCE2EB"
+
+
+def _apply_visual_style() -> None:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stAppViewContainer"] { background: #F2F3F6; color: #24344E; }
+        [data-testid="stHeader"] { background: rgba(242, 243, 246, 0.92); }
+        [data-testid="stSidebar"] { background: #E8ECF5; }
+        h1, h2, h3 { color: #263A82; font-family: 'Aptos Display', 'Segoe UI', sans-serif; }
+        h1 { font-weight: 400; }
+        [data-testid="stMetric"] {
+            background: #FFFFFF; border-left: 4px solid #5969C6;
+            padding: 12px 16px; border-radius: 4px;
+        }
+        [data-testid="stTabs"] button[aria-selected="true"] {
+            color: #263A82; border-bottom-color: #F5A000;
+        }
+        [data-testid="stDataFrame"] { border: 1px solid #DCE2EB; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _chart_layout(figure: go.Figure, *, height: int = 340) -> go.Figure:
+    figure.update_layout(
+        template="plotly_white",
+        height=height,
+        margin={"l": 20, "r": 20, "t": 22, "b": 24},
+        font={"family": "Aptos, Segoe UI, sans-serif", "color": INK, "size": 12},
+        paper_bgcolor="rgba(255,255,255,0)",
+        plot_bgcolor="#FFFFFF",
+        colorway=[INDIGO, AMBER, MID_BLUE, NAVY],
+        xaxis={"gridcolor": GRID, "zerolinecolor": GRID},
+        yaxis={"gridcolor": GRID, "zerolinecolor": GRID},
+        legend={"orientation": "h", "y": 1.12, "x": 0},
+    )
+    return figure
 
 TRIGGER_LABELS = {
     "corridor_low": "Риск дефицита",
@@ -184,13 +233,51 @@ def _render_flow(data: dict[str, pd.DataFrame]) -> None:
     st.title("Поток поставки и правила решений")
     st.caption("Рычаги S&OE ограничены текущим этапом партии; объём закупки остаётся в контуре S&OP.")
 
+    st.subheader("Путь товара и зоны управления")
+    labels = [
+        "Заказ\n4–5 мес.", "Производство\n30–45 дн.", "Готово к отгрузке\n0–14 дн.",
+        "Море / ж/д\n45–90 дн.", "Таможня\n7–14 дн.", "Центральный РЦ\n3–7 дн.",
+        "Региональные РЦ\n3–10 дн.", "Магазин",
+    ]
+    flow = go.Figure(go.Sankey(
+        arrangement="fixed",
+        node={
+            "label": labels,
+            "x": [0.02, 0.16, 0.30, 0.44, 0.58, 0.72, 0.86, 0.98],
+            "y": [0.42] * 8,
+            "pad": 14,
+            "thickness": 16,
+            "line": {"color": "#FFFFFF", "width": 1},
+            "color": [MUTED, MUTED, AMBER, INDIGO, INDIGO, INDIGO, INDIGO, MUTED],
+        },
+        link={
+            "source": list(range(7)),
+            "target": list(range(1, 8)),
+            "value": [1] * 7,
+            "color": ["rgba(89,105,198,0.24)"] * 7,
+        },
+    ))
+    _chart_layout(flow, height=300)
+    flow.update_layout(margin={"l": 8, "r": 8, "t": 40, "b": 18})
+    flow.add_annotation(x=0.08, y=1.12, xref="paper", yref="paper", text="S&OP · план закупок", showarrow=False, font={"color": MUTED, "size": 11})
+    flow.add_annotation(x=0.57, y=1.12, xref="paper", yref="paper", text="S&OE · срок, маршрут, распределение", showarrow=False, font={"color": NAVY, "size": 11})
+    flow.add_annotation(x=0.97, y=1.12, xref="paper", yref="paper", text="Продажи", showarrow=False, font={"color": MUTED, "size": 11})
+    st.plotly_chart(flow, width="stretch", config={"displayModeBar": False})
+
     stage_order = ["ready_not_shipped", "sea", "rail", "port", "customs", "received_dc"]
     shipment_counts = data["shipments"].groupby("stage").size().reindex(stage_order, fill_value=0)
-    pipeline = pd.DataFrame({
-        "Этап": [STAGE_LABELS[stage] for stage in stage_order],
-        "Партий": shipment_counts.tolist(),
-    })
-    st.bar_chart(pipeline, x="Этап", y="Партий", height=300)
+    stage_counts = go.Figure(go.Bar(
+        x=shipment_counts.tolist(),
+        y=[STAGE_LABELS[stage] for stage in stage_order],
+        orientation="h",
+        marker={"color": [AMBER if stage in {"port", "customs"} else INDIGO for stage in stage_order]},
+        text=shipment_counts.tolist(),
+        textposition="outside",
+        hovertemplate="%{y}: %{x} партий<extra></extra>",
+    ))
+    stage_counts.update_layout(xaxis_title="Число партий", yaxis={"autorange": "reversed"})
+    st.subheader("Партии в пути по этапам")
+    st.plotly_chart(_chart_layout(stage_counts, height=300), width="stretch", config={"displayModeBar": False})
 
     zones = data["freeze_zones"].copy()
     zones["Этапы"] = zones["stages"].map(lambda values: ", ".join(STAGE_LABELS[value] for value in values))
@@ -241,10 +328,25 @@ def _render_analytics(data: dict[str, pd.DataFrame], selected_bu: str, selected_
     left, right = st.columns(2)
     with left:
         st.subheader("Продажи и потенциальный спрос")
-        st.line_chart(sales_trend, x="week_start", y=["Факт продаж", "Потенциальный спрос"], height=320)
+        sales_figure = go.Figure()
+        sales_figure.add_trace(go.Scatter(
+            x=sales_trend["week_start"], y=sales_trend["Потенциальный спрос"],
+            name="Потенциальный спрос", mode="lines", line={"color": MID_BLUE, "width": 2, "dash": "dot"},
+        ))
+        sales_figure.add_trace(go.Scatter(
+            x=sales_trend["week_start"], y=sales_trend["Факт продаж"],
+            name="Факт продаж", mode="lines", line={"color": NAVY, "width": 3},
+            fill="tozeroy", fillcolor="rgba(89,105,198,0.10)",
+        ))
+        sales_figure.update_layout(yaxis_title="Единиц", hovermode="x unified")
+        st.plotly_chart(_chart_layout(sales_figure, height=340), width="stretch", config={"displayModeBar": False})
     with right:
         st.subheader("Остаток против страхового запаса")
-        st.bar_chart(stock_by_category, x="Категория", y=["Доступный остаток", "Страховой запас"], height=320)
+        stock_figure = go.Figure()
+        stock_figure.add_trace(go.Bar(x=stock_by_category["Категория"], y=stock_by_category["Доступный остаток"], name="Доступный остаток", marker_color=INDIGO))
+        stock_figure.add_trace(go.Bar(x=stock_by_category["Категория"], y=stock_by_category["Страховой запас"], name="Страховой запас", marker_color=AMBER))
+        stock_figure.update_layout(barmode="group", yaxis_title="Единиц")
+        st.plotly_chart(_chart_layout(stock_figure, height=340), width="stretch", config={"displayModeBar": False})
 
     events = _prepare_events(data, selected_bu, selected_category)
     active_events = events[~events["status"].isin(["decided", "executed"])]
@@ -254,7 +356,14 @@ def _render_analytics(data: dict[str, pd.DataFrame], selected_bu: str, selected_
         .rename_axis("Приоритет").reset_index(name="Событий")
     )
     st.subheader("Открытые проблемы по приоритету")
-    st.bar_chart(priority_counts, x="Приоритет", y="Событий", height=280)
+    priority_figure = go.Figure(go.Bar(
+        x=priority_counts["Приоритет"], y=priority_counts["Событий"],
+        marker_color=["#D85B50", AMBER, INDIGO, MID_BLUE],
+        text=priority_counts["Событий"], textposition="outside",
+        hovertemplate="%{x}: %{y} событий<extra></extra>",
+    ))
+    priority_figure.update_layout(yaxis_title="Число событий")
+    st.plotly_chart(_chart_layout(priority_figure, height=300), width="stretch", config={"displayModeBar": False})
     st.caption("Доступность в графиках — среднее значение синтетического in-stock share, не целевой KPI пилота.")
 
 
@@ -262,6 +371,77 @@ def _render_pilot_targets() -> None:
     st.title("Цели и критерии пилота")
     st.caption("Ориентиры из питч-дека. Это целевые значения проекта, а не факт синтетической модели.")
     st.metric("Ожидаемый годовой эффект", "≈ 1,3% выручки импорта")
+
+    left, right = st.columns([1.25, 1])
+    with left:
+        st.subheader("Экономический эффект")
+        st.caption("млн ₽ в год на каждые 10 млрд ₽ выручки импорта · оценка из презентации")
+        effect = go.Figure(go.Waterfall(
+            measure=["relative", "relative", "relative", "relative", "total"],
+            x=["Рост наличия", "Меньше уценок", "Оборотный капитал", "Меньше срочных мер", "Итого"],
+            y=[42, 40, 40, 5, 0],
+            text=["42", "40", "40", "5", "127"],
+            textposition="outside",
+            connector={"line": {"color": GRID, "width": 1}},
+            increasing={"marker": {"color": MID_BLUE}},
+            totals={"marker": {"color": NAVY}},
+            hovertemplate="%{x}: %{y} млн ₽<extra></extra>",
+        ))
+        effect.update_layout(yaxis_title="млн ₽ в год", showlegend=False)
+        st.plotly_chart(_chart_layout(effect, height=350), width="stretch", config={"displayModeBar": False})
+    with right:
+        st.subheader("Прогноз эффекта пилота")
+        st.markdown(
+            "**Рост наличия** — главный эффект, обязательный для приёмки.\n\n"
+            "Снижение уценок и ускорение оборота высвобождают деньги; меньше срочных мер снижает дополнительные расходы.\n\n"
+            "Оценка модельная: проверяется сравнением с контрольными категориями и прошлым сезоном."
+        )
+
+    st.subheader("Риски внедрения")
+    risk_names = [
+        "Сопротивление регионов",
+        "Неточные сроки ETA",
+        "Перегрузка совещания",
+        "Подмена S&OP циклом S&OE",
+        "Эффект пилота теряется в шуме",
+    ]
+    risk_x = [3, 3, 2, 1, 2]
+    risk_y = [4, 2, 3, 4, 1]
+    matrix = go.Figure()
+    risk_fills = ["#FFFFFF", "#FFF7E8", "#FFE8B5", "#FFD27A"]
+    for probability in range(1, 5):
+        for impact in range(1, 5):
+            intensity = min(3, (probability * impact - 1) // 4)
+            matrix.add_shape(
+                type="rect", x0=probability - 0.5, x1=probability + 0.5,
+                y0=impact - 0.5, y1=impact + 0.5,
+                line={"color": "#FFFFFF", "width": 2}, fillcolor=risk_fills[intensity],
+                layer="below",
+            )
+    matrix.add_trace(go.Scatter(
+        x=risk_x, y=risk_y, mode="markers+text",
+        text=[str(index) for index in range(1, 6)], textposition="middle center",
+        marker={"size": 28, "color": NAVY, "line": {"color": "#FFFFFF", "width": 2}},
+        customdata=risk_names,
+        hovertemplate="%{customdata}<br>Вероятность: %{x}<br>Влияние: %{y}<extra></extra>",
+        showlegend=False,
+    ))
+    matrix.update_layout(
+        xaxis={"title": "Вероятность", "tickvals": [1, 2, 3, 4], "ticktext": ["Низкая", "Средняя", "Высокая", "Очень высокая"], "range": [0.5, 4.5], "showgrid": False},
+        yaxis={"title": "Влияние", "tickvals": [1, 2, 3, 4], "ticktext": ["Низкое", "Среднее", "Высокое", "Критическое"], "range": [0.5, 4.5], "showgrid": False},
+    )
+    left, right = st.columns([1, 1.2])
+    with left:
+        st.plotly_chart(_chart_layout(matrix, height=380), width="stretch", config={"displayModeBar": False})
+    with right:
+        mitigations = pd.DataFrame([
+            {"№": 1, "Риск": risk_names[0], "Мера": "Правила утверждаются S&OP; отказ от заявки дешевле до отгрузки"},
+            {"№": 2, "Риск": risk_names[1], "Мера": "На пилоте ETA вводится вручную, затем подключается API"},
+            {"№": 3, "Риск": risk_names[2], "Мера": "На встречу выносится не более 8 споров"},
+            {"№": 4, "Риск": risk_names[3], "Мера": "Объёмы и бюджеты остаются в месячном S&OP"},
+            {"№": 5, "Риск": risk_names[4], "Мера": "Сравнение с контрольными категориями и сезоном"},
+        ])
+        st.dataframe(mitigations, width="stretch", hide_index=True)
 
     targets = pd.DataFrame([
         {"Показатель": "Наличие импорта в магазине", "Было": "88%", "Цель": "91%", "Направление": "Рост"},
@@ -287,6 +467,22 @@ def _render_pilot_targets() -> None:
         {"Этап": "Тиражирование", "Срок": "10–14 мес.", "Результат / gate": "Волна 1 — 50%, затем весь импорт в цикле"},
         {"Этап": "Автоматизация", "Срок": "13–18 мес.", "Результат / gate": "Автоправила и сценарии после проверки пилота"},
     ])
+    timeline = go.Figure(go.Bar(
+        x=[3, 6, 5, 6],
+        base=[0.5, 3.5, 9.5, 12.5],
+        y=["Диагностика", "Пилот", "Тиражирование", "Автоматизация"],
+        orientation="h",
+        marker_color=[MUTED, INDIGO, NAVY, AMBER],
+        text=["1–3 мес.", "4–9 мес.", "10–14 мес.", "13–18 мес."],
+        textposition="inside",
+        insidetextanchor="middle",
+        hovertemplate="%{y}: %{text}<extra></extra>",
+    ))
+    timeline.update_layout(
+        xaxis={"title": "Месяц проекта", "tickvals": list(range(1, 19)), "range": [0.5, 18.5], "gridcolor": GRID},
+        yaxis={"autorange": "reversed"}, showlegend=False,
+    )
+    st.plotly_chart(_chart_layout(timeline, height=300), width="stretch", config={"displayModeBar": False})
     st.dataframe(roadmap, width="stretch", hide_index=True)
     st.subheader("Приёмка")
     st.markdown(
@@ -299,6 +495,7 @@ def _render_pilot_targets() -> None:
 
 
 def run() -> None:
+    _apply_visual_style()
     data = generate_domovoy_data()
     selected_bu, selected_category, history_weeks = _render_filters(data)
     events = _prepare_events(data, selected_bu, selected_category)
