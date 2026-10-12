@@ -33,8 +33,8 @@ def _as_datetime(value: date | datetime) -> datetime:
     return datetime.combine(value, datetime.min.time())
 
 
-def generate_domovoy_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
-    """Generate deterministic synthetic data for the Domovoy demo according to the v2 data contract."""
+def generate_demo_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
+    """Generate deterministic synthetic data for the S&OE demo."""
     as_of = _week_start(as_of or date.today())
     rng = np.random.default_rng(SEED)
 
@@ -442,11 +442,8 @@ def generate_domovoy_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
     }
 
 
-def generate_data(as_of: date | None = None, *, mode: str = "legacy", domovoy: bool = False, profile: str | None = None, tz_v2: bool = False) -> dict[str, pd.DataFrame]:
-    selected_mode = (profile or mode or "legacy").lower()
-    if domovoy or tz_v2 or selected_mode in {"domovoy", "v2", "tz_v2", "demo_v2", "updated"}:
-        return generate_domovoy_data(as_of)
-    return generate_domovoy_data(as_of)
+def generate_data(as_of: date | None = None) -> dict[str, pd.DataFrame]:
+    return generate_demo_data(as_of)
 
 
 def _avg_weekly_potential_demand(data: dict[str, pd.DataFrame], sku: str, bu_id: str) -> float:
@@ -645,7 +642,7 @@ def optimize_transfer(data: dict[str, pd.DataFrame], event: pd.Series, import_da
     if options.empty:
         return {"status": "failed", "message": "Нет доступных вариантов для расчёта."}
 
-    model = pulp.LpProblem("soe_domovoy_choice", pulp.LpMinimize)
+    model = pulp.LpProblem("soe_transfer_choice", pulp.LpMinimize)
     feasible_options = options[
         (options["Вариант"] == "Без вмешательства") | (options["Операция, ед."] > 0)
     ].reset_index(drop=True)

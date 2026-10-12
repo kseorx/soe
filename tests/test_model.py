@@ -5,14 +5,14 @@ import pandas as pd
 from src.model import (
     allocate_equal_cover_days,
     cap_extra_import_quantity,
-    generate_domovoy_data,
+    generate_demo_data,
     optimize_transfer,
     scenario_options,
 )
 
 
-def test_domovoy_data_shape():
-    data = generate_domovoy_data(date(2026, 10, 5))
+def test_demo_data_shape():
+    data = generate_demo_data(date(2026, 10, 5))
 
     assert len(data["business_units"]) == 6
     assert (data["business_units"]["bu_type"] == "trade").sum() == 5
@@ -41,7 +41,7 @@ def test_domovoy_data_shape():
 
 
 def test_scenario_options_are_feasible_and_ordered():
-    data = generate_domovoy_data(date(2026, 10, 5))
+    data = generate_demo_data(date(2026, 10, 5))
     event = data["events"].iloc[0]
 
     options = scenario_options(data, event, import_day=10)
@@ -57,7 +57,7 @@ def test_scenario_options_are_feasible_and_ordered():
 
 
 def test_scenario_uses_daily_demand_and_dc_stock_for_screenshot_case():
-    data = generate_domovoy_data(date(2026, 10, 5))
+    data = generate_demo_data(date(2026, 10, 5))
     event = data["events"].iloc[7]
 
     options = scenario_options(data, event, import_day=5)
@@ -83,7 +83,7 @@ def test_scenario_uses_daily_demand_and_dc_stock_for_screenshot_case():
 
 
 def test_screenshot_event_uses_potential_demand_and_reports_covered_stock():
-    data = generate_domovoy_data(date(2026, 10, 5))
+    data = generate_demo_data(date(2026, 10, 5))
     event = data["events"].iloc[39]
     options = scenario_options(data, event, import_day=5)
     result = options.iloc[0]
@@ -98,7 +98,7 @@ def test_screenshot_event_uses_potential_demand_and_reports_covered_stock():
 
 
 def test_transfer_uses_only_donor_stock_above_safety_stock():
-    data = generate_domovoy_data(date(2026, 10, 5))
+    data = generate_demo_data(date(2026, 10, 5))
     event = data["events"].iloc[0]
     target_dc = (data["inventory"]["sku"] == event["sku"]) & (data["inventory"]["bu_id"] == event["bu_id"]) & (data["inventory"]["location_type"] == "dc")
     data["inventory"].loc[target_dc, "on_hand"] = 0
@@ -112,7 +112,7 @@ def test_transfer_uses_only_donor_stock_above_safety_stock():
 
 
 def test_optimizer_returns_structured_result():
-    data = generate_domovoy_data(date(2026, 10, 5))
+    data = generate_demo_data(date(2026, 10, 5))
     event = data["events"].iloc[0]
 
     result = optimize_transfer(data, event, import_day=10)
@@ -124,8 +124,8 @@ def test_optimizer_returns_structured_result():
 
 
 def test_seed_reproducibility():
-    one = generate_domovoy_data(date(2026, 10, 5))
-    two = generate_domovoy_data(date(2026, 10, 5))
+    one = generate_demo_data(date(2026, 10, 5))
+    two = generate_demo_data(date(2026, 10, 5))
 
     pd.testing.assert_frame_equal(one["events"], two["events"])
     pd.testing.assert_frame_equal(one["inventory"], two["inventory"])
