@@ -34,6 +34,7 @@ def _apply_visual_style() -> None:
         [data-testid="stAppViewContainer"] { background: #F2F3F6; color: #24344E; }
         [data-testid="stHeader"] { background: rgba(242, 243, 246, 0.92); }
         [data-testid="stSidebar"] { background: #E8ECF5; }
+        [data-testid="stMainBlockContainer"] { max-width: none; width: 100%; }
         h1, h2, h3 { color: #263A82; font-family: 'Aptos Display', 'Segoe UI', sans-serif; }
         h1 { font-weight: 400; }
         [data-testid="stMetric"] {
@@ -88,8 +89,8 @@ def _chart_layout(figure: go.Figure, *, height: int = 340) -> go.Figure:
         paper_bgcolor="rgba(255,255,255,0)",
         plot_bgcolor="#FFFFFF",
         colorway=[INDIGO, AMBER, MID_BLUE, NAVY],
-        xaxis={"gridcolor": GRID, "zerolinecolor": GRID},
-        yaxis={"gridcolor": GRID, "zerolinecolor": GRID},
+        xaxis={"gridcolor": GRID, "zerolinecolor": GRID, "automargin": True},
+        yaxis={"gridcolor": GRID, "zerolinecolor": GRID, "automargin": True},
         legend={"orientation": "h", "y": 1.08, "x": 0},
     )
     return figure
